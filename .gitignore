@@ -1,3 +1,16 @@
+.env
+__pycache__/
+*.pyc
+data/*.json
+!.gitkeep
 venv/
 .venv/
-.env
+.DS_Store
+*.pyc
+*.pyo
+*.pyd
+.Python
+test_groq.py        
+test_submit.py      
+test_complete.py
+test_app.py
