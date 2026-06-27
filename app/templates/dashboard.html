@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Provenance Guard — Dev Dashboard</title>
+  <style>
+    :root { --bg:#0f1117; --card:#1a1d27; --line:#2a2e3a; --txt:#e6e8ee;
+            --muted:#8a90a2; --accent:#5b8cff; --ok:#3fb950; --warn:#d29922; --err:#f85149; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--txt); line-height:1.45; }
+    header { padding:18px 24px; border-bottom:1px solid var(--line); }
+    header h1 { margin:0; font-size:18px; }
+    header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .wrap { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 24px; max-width:1200px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+    .card h2 { margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--accent); }
+    label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+    input, textarea { width:100%; background:#0c0e14; color:var(--txt); border:1px solid var(--line);
+                      border-radius:6px; padding:9px 10px; font-size:14px; font-family:inherit; }
+    textarea { resize:vertical; min-height:90px; }
+    button { margin-top:10px; background:var(--accent); color:#fff; border:0; border-radius:6px;
+             padding:9px 14px; font-size:13px; font-weight:600; cursor:pointer; }
+    button.alt { background:#2a2e3a; }
+    button:active { transform:translateY(1px); }
+    pre { background:#0c0e14; border:1px solid var(--line); border-radius:6px; padding:10px;
+          font-size:12px; overflow:auto; max-height:340px; white-space:pre-wrap; word-break:break-word; }
+    .kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 12px; font-size:13px; margin-top:8px; }
+    .kv div:nth-child(odd) { color:var(--muted); }
+    .bar { height:14px; background:#0c0e14; border:1px solid var(--line); border-radius:7px; overflow:hidden; margin:2px 0 8px; }
+    .bar > span { display:block; height:100%; background:var(--accent); }
+    .bar.combined > span { background:var(--warn); }
+    .bar.conf > span { background:var(--ok); }
+    .pill { display:inline-block; padding:2px 9px; border-radius:99px; font-size:12px; border:1px solid var(--line); }
+    .err { border-color:var(--err) !important; color:#ffb4ad; }
+    .ok-msg { color:var(--ok); }
+    .muted { color:var(--muted); font-size:12px; }
+    .span2 { grid-column:1 / -1; }
+    .rl-row { font-family:ui-monospace, Menlo, monospace; font-size:12px; }
+    .rl-200 { color:var(--ok); } .rl-429 { color:var(--err); } .rl-other { color:var(--warn); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🛡️ Provenance Guard — Developer Dashboard</h1>
+    <p>For development/testing only. Consumes the live API; no backend logic is bypassed.</p>
+  </header>
+
+  <div class="wrap">
+    <!-- SECTION 1: SUBMIT -->
+    <section class="card">
+      <h2>1 · Submit Content</h2>
+      <label>creator_id</label>
+      <input id="s-creator" value="dev_user">
+      <label>text</label>
+      <textarea id="s-text" placeholder="Paste content to analyze..."></textarea>
+      <label>Dev samples (populate the textarea with representative content)</label>
+      <div>
+        <button class="alt" onclick="fillSample('human')">Sample: Human</button>
+        <button class="alt" onclick="fillSample('uncertain')">Sample: Uncertain</button>
+        <button class="alt" onclick="fillSample('ai')">Sample: AI</button>
+      </div>
+      <button onclick="submitContent()">Submit</button>
+      <div id="s-out"></div>
+    </section>
+
+    <!-- SECTION 6: CONFIDENCE VISUALIZATION (filled after submit) -->
+    <section class="card">
+      <h2>6 · Confidence Visualization</h2>
+      <div id="viz"><span class="muted">Submit content to see score breakdown.</span></div>
+    </section>
+
+    <!-- SECTION 2: APPEAL -->
+    <section class="card">
+      <h2>2 · Appeal Submission</h2>
+      <label>content_id (auto-filled from latest submission, editable)</label>
+      <input id="a-cid" placeholder="content_id">
+      <label>creator_reasoning</label>
+      <textarea id="a-reason" placeholder="Why are you appealing this classification?"></textarea>
+      <button onclick="submitAppeal()">Submit Appeal</button>
+      <div id="a-out"></div>
+    </section>
+
+    <!-- SECTION 4: HEALTH -->
+    <section class="card">
+      <h2>4 · Health Check</h2>
+      <button class="alt" onclick="checkHealth()">Check Health</button>
+      <div id="h-out"></div>
+    </section>
+
+    <!-- SECTION 5: RATE LIMIT TESTER -->
+    <section class="card">
+      <h2>5 · Rate Limit Tester</h2>
+      <p class="muted">Sends 12 rapid POST /submit requests. Does not bypass the limiter.</p>
+      <button class="alt" onclick="runRateLimitTest()">Run Rate Limit Test</button>
+      <div id="rl-out"></div>
+    </section>
+
+    <!-- SECTION 3: AUDIT LOG -->
+    <section class="card span2">
+      <h2>3 · Audit Log Viewer</h2>
+      <button class="alt" onclick="refreshLog()">Refresh Log</button>
+      <span id="log-count" class="muted"></span>
+      <pre id="log-out">Click "Refresh Log".</pre>
+    </section>
+  </div>
+
+<script>
+// ---- Section 7: shared API + error display helper -------------------------
+async function api(method, url, body) {
+  try {
+    const opts = { method, headers: {} };
+    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    const res = await fetch(url, opts);
+    let data; try { data = await res.json(); } catch (e) { data = { error: 'Non-JSON response', status: res.status }; }
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    return { ok: false, status: 0, data: { error: 'Network error: ' + e.message } };
+  }
+}
+function show(elId, res, okHtml) {
+  const el = document.getElementById(elId);
+  if (res.ok) { el.className = ''; el.innerHTML = okHtml; }
+  else {
+    el.innerHTML = '<p class="muted">Error ' + res.status + ':</p>' +
+                   '<pre class="err">' + JSON.stringify(res.data, null, 2) + '</pre>';
+  }
+}
+function pct(x) { return Math.round((x || 0) * 100); }
+function bar(label, value, cls) {
+  return '<label>' + label + ': ' + Number(value || 0).toFixed(3) + '</label>' +
+    '<div class="bar ' + (cls || '') + '"><span style="width:' + pct(value) + '%"></span></div>';
+}
+
+let latestContentId = null;
+
+// ---- Section 3 (Issue 3): representative dev samples -----------------------
+// These only populate the textarea with realistic content; the detection
+// algorithm is unchanged. Each is chosen to typically land in a different
+// transparency variant (human-casual / borderline / AI-formal).
+const SAMPLES = {
+  human: "ok so i finally tried that new ramen place downtown and honestly? underwhelming. the broth was fine but they put WAY too much sodium in it and i was thirsty for like three hours after. my friend got the spicy version and said it was better. probably won't go back unless someone drags me there",
+  uncertain: "The relationship between monetary policy and asset price inflation has been extensively studied in the literature. Central banks face a fundamental tension between their mandate for price stability and the unintended consequences of prolonged low interest rates on equity and real estate valuations.",
+  ai: "Artificial intelligence represents a transformative paradigm shift in modern society. It is important to note that while the benefits of AI are numerous, it is equally essential to consider the ethical implications. Furthermore, stakeholders across various sectors must collaborate to ensure responsible deployment."
+};
+function fillSample(kind) {
+  document.getElementById('s-text').value = SAMPLES[kind];
+  document.getElementById('s-creator').value = 'dev_' + kind;
+}
+
+// ---- Section 1 + 6: submit + visualization --------------------------------
+async function submitContent() {
+  const body = { text: document.getElementById('s-text').value,
+                 creator_id: document.getElementById('s-creator').value };
+  const res = await api('POST', '/submit', body);
+  if (res.ok) {
+    const d = res.data;
+    latestContentId = d.content_id;
+    document.getElementById('a-cid').value = d.content_id;   // auto-fill appeal
+    show('s-out', res,
+      '<div class="kv">' +
+      '<div>Content ID</div><div>' + d.content_id + '</div>' +
+      '<div>Attribution</div><div>' + d.attribution + '</div>' +
+      '<div>Combined score</div><div>' + d.combined_score + '</div>' +
+      '<div>Confidence</div><div>' + d.confidence + '</div>' +
+      '<div>Transparency label</div><div>' + d.transparency_label + '</div>' +
+      '<div>Transparency variant</div><div><span class="pill">' + d.transparency_variant + '</span></div>' +
+      '<div>Groq score</div><div>' + d.groq_score + '</div>' +
+      '<div>Stylometric score</div><div>' + d.stylometric_score + '</div>' +
+      '</div>');
+    renderViz(d);
+  } else { show('s-out', res); }
+}
+function renderViz(d) {
+  document.getElementById('viz').innerHTML =
+    bar('Groq Score', d.groq_score) +
+    bar('Stylometric Score', d.stylometric_score) +
+    bar('Combined Score', d.combined_score, 'combined') +
+    bar('Confidence', d.confidence, 'conf') +
+    '<div>Transparency Variant: <span class="pill">' + d.transparency_variant + '</span></div>';
+}
+
+// ---- Section 2: appeal ----------------------------------------------------
+async function submitAppeal() {
+  const body = { content_id: document.getElementById('a-cid').value,
+                 creator_reasoning: document.getElementById('a-reason').value };
+  const res = await api('POST', '/appeal', body);
+  if (res.ok) {
+    const d = res.data;
+    show('a-out', res,
+      '<p class="ok-msg">✔ ' + d.message + '</p>' +
+      '<div class="kv"><div>Status</div><div>' + d.status + '</div>' +
+      '<div>Timestamp</div><div>' + d.appeal_timestamp + '</div></div>');
+  } else { show('a-out', res); }
+}
+
+// ---- Section 3: audit log -------------------------------------------------
+async function refreshLog() {
+  const res = await api('GET', '/log');
+  if (res.ok) {
+    const entries = (res.data.entries || []).slice().reverse(); // newest first
+    document.getElementById('log-count').textContent = '  (' + res.data.count + ' entries, newest first)';
+    document.getElementById('log-out').className = '';
+    document.getElementById('log-out').textContent = JSON.stringify(entries, null, 2);
+  } else {
+    document.getElementById('log-out').className = 'err';
+    document.getElementById('log-out').textContent = JSON.stringify(res.data, null, 2);
+  }
+}
+
+// ---- Section 4: health ----------------------------------------------------
+async function checkHealth() {
+  const res = await api('GET', '/health');
+  show('h-out', res, '<pre>' + JSON.stringify(res.data, null, 2) + '</pre>');
+}
+
+// ---- Section 5: rate limit tester -----------------------------------------
+async function runRateLimitTest() {
+  const out = document.getElementById('rl-out');
+  out.innerHTML = '<p class="muted">Sending 12 rapid requests…</p>';
+  const body = { text: 'rate limit test content', creator_id: 'rl_tester' };
+  const results = await Promise.all(
+    Array.from({ length: 12 }, () => api('POST', '/submit', body))
+  );
+  let ok = 0, blocked = 0, rows = '';
+  results.forEach((r, i) => {
+    if (r.status === 200) ok++; else if (r.status === 429) blocked++;
+    const cls = r.status === 200 ? 'rl-200' : (r.status === 429 ? 'rl-429' : 'rl-other');
+    rows += '<div class="rl-row ' + cls + '">Request ' + (i + 1) + ' : ' + r.status + '</div>';
+  });
+  out.innerHTML = rows +
+    '<p>Total successes: <b>' + ok + '</b> &nbsp; Total 429s: <b>' + blocked + '</b></p>' +
+    '<p class="muted">Note: limit is per-IP per rolling minute, so earlier submissions this minute count too.</p>';
+}
+</script>
+</body>
+</html>

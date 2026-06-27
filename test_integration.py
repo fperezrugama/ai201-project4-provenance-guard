@@ -19,6 +19,7 @@ from app.utils.helpers import (
     classify_score,
     combine_scores,
     compute_confidence,
+    predict_attribution,
 )
 
 SAMPLES = [
@@ -89,9 +90,17 @@ def test_integration():
         assert abs(combined - combine_scores(groq, stylo)) < 1e-3, f"{name}: combine math"
         # Confidence math: rises away from 0.5, deterministic.
         assert abs(confidence - compute_confidence(combined)) < 1e-3, f"{name}: confidence math"
-        # Label is derived from the COMBINED score, not a single signal.
-        assert (body["attribution"], body["label"]) == classify_score(combined), \
+        # Prediction & label are derived from the COMBINED score (not a single
+        # signal). attribution is the standardized 3-value prediction; label is
+        # the detailed display string from classify_score.
+        assert body["attribution"] == predict_attribution(combined), \
+            f"{name}: attribution not derived from combined score"
+        assert body["label"] == classify_score(combined)[1], \
             f"{name}: label not derived from combined score"
+        assert body["attribution"] in {"ai_generated", "uncertain", "human_written"}, \
+            f"{name}: attribution not standardized"
+        assert body["transparency_variant"] in {"likely_ai", "uncertain", "likely_human"}, \
+            f"{name}: transparency_variant not standardized"
 
     # --- Audit log records every required field for each submission ---
     log = client.get("/log").get_json()
