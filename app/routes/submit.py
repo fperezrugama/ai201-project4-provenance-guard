@@ -2,9 +2,15 @@ from flask import Blueprint, request, jsonify
 import uuid
 
 from app.detection.groq_signal import groq_signal
+from app.detection.stylometric_signal import stylometric_signal
 from app.services.audit_log import AuditLog
 from app.utils.validators import validate_submission
-from app.utils.helpers import classify_score, iso_timestamp
+from app.utils.helpers import (
+    classify_score,
+    combine_scores,
+    compute_confidence,
+    iso_timestamp,
+)
 
 bp = Blueprint('submit', __name__, url_prefix='/')
 
@@ -26,14 +32,20 @@ def submit_content():
     content_id = str(uuid.uuid4())
     timestamp = iso_timestamp()
 
-    # Signal 1: Groq LLM assessment. It is the only signal wired up in
-    # Milestone 3, so its score maps directly to the label (the ensemble and
-    # calibration steps arrive in Milestone 4).
+    # Run the two independent detection signals. They are kept completely
+    # separate — Signal 1 (Groq LLM) and Signal 2 (stylometric heuristics) —
+    # and only their numeric scores are combined here.
     groq_result = groq_signal(text)
-    score = groq_result['score']
-    confidence = groq_result['confidence']
+    groq_score = groq_result['score']
 
-    attribution, label = classify_score(score)
+    stylometric_result = stylometric_signal(text)
+    stylometric_score = stylometric_result['score']
+
+    # Ensemble: weighted average (Groq 60%, Stylometric 40%) -> confidence ->
+    # final prediction label, all from the combined score.
+    combined_score = round(combine_scores(groq_score, stylometric_score), 4)
+    confidence = round(compute_confidence(combined_score), 4)
+    attribution, label = classify_score(combined_score)
 
     audit_log.add_entry({
         "content_id": content_id,
@@ -41,18 +53,23 @@ def submit_content():
         "timestamp": timestamp,
         "attribution": attribution,
         "confidence": confidence,
-        "groq_score": score,
-        "groq_confidence": confidence,
+        "groq_score": groq_score,
+        "groq_confidence": groq_result['confidence'],
         "groq_reasoning": groq_result.get('reasoning', ''),
+        "stylometric_score": stylometric_score,
+        "combined_score": combined_score,
         "status": "classified",
-        "signal_used": "groq",
+        "signal_used": "ensemble",
     })
 
     return jsonify({
         "content_id": content_id,
         "attribution": attribution,
-        "confidence": confidence,
         "label": label,
+        "groq_score": groq_score,
+        "stylometric_score": stylometric_score,
+        "combined_score": combined_score,
+        "confidence": confidence,
         "timestamp": timestamp,
         "appeal_available": True,
     }), 200
