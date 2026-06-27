@@ -1107,6 +1107,147 @@ curl http://localhost:5000/log
 Should show: timestamp, content_id, creator_id, both signal scores, confidence, attribution, label, status
 
 
+## Ensemble Detection (3 Signals)
 
+Stretch feature: a third, independent signal was added so the system combines
+3+ signals into one final score.
+
+### Third signal: Behavioral Analysis (`app/detection/behavioral_signal.py`)
+- **What it measures:** patterns *around* a submission rather than its text —
+  length consistency across a creator's submissions, submission frequency
+  (cadence), and similarity to the creator's previous submissions.
+- **Why it's valuable:** adds a behavioral dimension orthogonal to the semantic
+  (Groq) and structural (stylometric) signals — e.g. rapid near-duplicate
+  submissions look automated even when each piece of text reads fine.
+- **Limitations:** needs history (returns a neutral 0.5 with low confidence for a
+  creator's first submission), and can be gamed (varying length/timing).
+  History here is in-memory and process-local.
+
+### Weighting (3 signals)
+| Signal | Weight | Rationale |
+|--------|--------|-----------|
+| Groq LLM | 40% | Best at understanding context and meaning |
+| Stylometric | 35% | Good at structural analysis |
+| Behavioral | 25% | New signal, lowest confidence initially |
+
+`combined_score = 0.40*groq + 0.35*stylometric + 0.25*behavioral`
+
+### Confidence (agreement-based)
+`confidence = clamp(1 - stdev([groq, stylometric, behavioral]) * 1.5, 0, 1)`
+- Signals that agree (low standard deviation) → high confidence.
+- Signals that disagree (high standard deviation) → low confidence.
+- Uses the sample standard deviation. Examples: [0.8,0.75,0.7] → ~0.92;
+  [0.9,0.4,0.6] → ~0.62.
+
+### Decision rules (unchanged, conservative — false positives are worse)
+- ≥ 0.80 High-confidence AI · 0.60–0.79 Moderate AI · 0.40–0.59 Uncertain ·
+  0.20–0.39 Moderate human · < 0.20 High-confidence human.
+- Appeals remain available for every label, including high-confidence AI.
+
+The two-signal ensemble (Groq 60% / Stylometric 40%) is retained in
+`EnsembleDetector.detect_two_signal` for backward compatibility.
+
+## Stretch Feature: Analytics Dashboard
+
+A read-only analytics layer (`app/services/analytics.py`, exposed at
+`GET /analytics/metrics` and `GET /analytics/summary`) that derives metrics from
+the audit log. It never writes to the log or touches detection.
+
+### Metrics tracked & why
+- **total_submissions** — overall volume processed.
+- **detection_counts** — how many `ai_generated` / `uncertain` / `human_written`
+  predictions were made; shows the distribution of outcomes.
+- **avg_confidence** — how confident the ensemble is on average; a low value
+  flags lots of signal disagreement.
+- **appeal_count / appeal_rate** — how often creators contest results; a high
+  rate is an early warning of false positives (the system's core risk).
+- **appeal_status** — pending / approved / denied breakdown of appeals.
+- **Additional metric A — confidence_timeline:** average confidence per day for
+  the last 7 days, to spot trends/drift over time.
+- **Additional metric B — avg_signal_scores:** mean score per signal
+  (Groq / stylometric / behavioral), revealing which signal drives decisions.
+- **recent_entries** — last 10 entries for a detail view.
+
+### How the dashboard works
+The dashboard page (`GET /`) fetches `/analytics/metrics` via JavaScript on load
+and on a "Refresh Analytics" click, then renders summary cards, a detection
+breakdown, per-signal averages, a 7-day confidence trend (div-based bars, no
+chart library), appeal details, and recent activity. The service is defensive:
+missing file, missing fields, and unparseable timestamps all degrade gracefully
+instead of erroring.
+
+## Stretch Feature: Verified Human / Provenance Certificate
+
+A credential system (`app/services/certificate.py`, exposed under
+`/certificate`) that lets a creator earn a "Verified Human" badge.
+
+### What the badge means
+The creator completed an additional, human-reviewed verification step. It is a
+**display annotation only** — it never changes detection scores, the prediction,
+or confidence. A verified creator's transparency label simply gains a 👤 badge
+and the note "This creator has a Verified Human credential."
+
+### Workflow (request → review → approve/deny)
+1. **Request** — `POST /certificate/request` with `{creator_id}` creates a
+   `pending` record. Credentials are **never** granted automatically.
+2. **Review** — a moderator lists pending requests with `GET /certificate/review`.
+3. **Approve / Deny** — `POST /certificate/review/approve` sets status `active`
+   and mints a `certificate_id`; `POST /certificate/review/deny` sets `denied`.
+   Both are explicit moderator actions (no self-approval).
+4. **Revoke** — `POST /certificate/revoke/<creator_id>` sets status `revoked`.
+
+Statuses: `none → pending → active | denied`, and `active → revoked`.
+
+### API endpoints
+- `POST /certificate/request` — request verification (202 pending).
+- `GET  /certificate/status/<creator_id>` — current status.
+- `GET  /certificate/review` — pending requests (moderator).
+- `POST /certificate/review/approve` — approve (moderator).
+- `POST /certificate/review/deny` — deny (moderator).
+- `POST /certificate/revoke/<creator_id>` — revoke (admin).
+
+`POST /submit` now returns an `is_verified` boolean and, for verified creators,
+the badge on `transparency_label`. Data persists to `data/certificates.json`
+(atomic writes, like the audit log).
+
+## Stretch Feature: Multi-Modal Support (Image Descriptions)
+
+`POST /submit` accepts a `content_type` field and now supports a second type,
+`image_description`, alongside the default `text`.
+
+### Architecture
+- `app/detection/base.py` — a `Detector` interface (`detect`, `get_supported_type`).
+- `app/detection/text_detector.py` — wraps the existing 3-signal text pipeline
+  behind the interface (reuses the same signal functions; no duplication).
+- `app/detection/image_description_detector.py` — a deterministic, heuristic
+  detector for image descriptions (no LLM, no image processing).
+- `app/detection/registry.py` — maps `content_type` -> detector.
+
+The existing text path is **unchanged**: `content_type` defaults to `text` and
+falls through to the original inline logic, so the rate limiter, behavioral
+history, validators, response shape, and tests are all preserved. Only
+`image_description` is routed to the new detector; unknown types return 400 with
+the supported-types list.
+
+### Image-description signals (each 0-1, 1 = AI-like)
+- **template_detection (40%)** — AI-style phrasing ("image shows", "picture of").
+- **complexity (30%)** — sentence-length variance + vocabulary diversity (low
+  variance / low diversity -> AI-like).
+- **metadata_consistency (20%)** — specific width/height/format/objects look
+  human; generic/unknown looks AI.
+- **emotion (10%)** — emotive language ("beautiful", "I feel") looks human.
+
+Confidence is agreement-based (`1 - stdev(signals) * 1.5`). Attribution is
+standardized to the same 3 values as text (`ai_generated` / `uncertain` /
+`human_written`), and the certificate badge + transparency label apply
+identically. Submissions are logged with `content_type` and the per-signal
+`signal_scores`.
+
+Request example:
+```json
+{ "content_type": "image_description", "creator_id": "u1",
+  "description": "I think this is gorgeous ...", "width": 1920,
+  "height": 1080, "format": "jpg", "objects": ["sun", "field"] }
+```
 
 

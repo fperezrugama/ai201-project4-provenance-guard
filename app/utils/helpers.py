@@ -120,12 +120,16 @@ _TRANSPARENCY_TEMPLATES = {
 }
 
 
-def transparency_label(attribution, confidence):
+def transparency_label(attribution, confidence, is_verified=False):
     """Build the user-facing transparency label.
 
     Args:
         attribution: the unchanged prediction (one of the 5-tier values).
         confidence: the Milestone 4 confidence score (0-1).
+        is_verified: whether the creator holds an active Verified Human
+            credential. When True the label gets a 👤 badge and a note. This is
+            purely a display annotation — it does NOT change the prediction,
+            score, or confidence.
 
     Returns:
         (variant, text) where variant is one of 'likely_ai', 'uncertain',
@@ -134,4 +138,7 @@ def transparency_label(attribution, confidence):
     """
     variant = _TRANSPARENCY_BUCKETS.get(attribution, "uncertain")
     pct = round(confidence * 100)
-    return variant, _TRANSPARENCY_TEMPLATES[variant].format(pct=pct)
+    text = _TRANSPARENCY_TEMPLATES[variant].format(pct=pct)
+    if is_verified:
+        text = "👤 " + text + " This creator has a Verified Human credential."
+    return variant, text

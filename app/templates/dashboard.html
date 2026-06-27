@@ -39,6 +39,15 @@
     .span2 { grid-column:1 / -1; }
     .rl-row { font-family:ui-monospace, Menlo, monospace; font-size:12px; }
     .rl-200 { color:var(--ok); } .rl-429 { color:var(--err); } .rl-other { color:var(--warn); }
+    .stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:6px 0 12px; }
+    .stat-card { background:#0c0e14; border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+    .stat-label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+    .stat-value { font-size:22px; font-weight:700; margin-top:2px; }
+    .sub-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .trend { display:flex; align-items:flex-end; gap:6px; height:90px; padding-top:6px; }
+    .trend .col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }
+    .trend .fill { width:100%; background:var(--ok); border-radius:3px 3px 0 0; min-height:2px; }
+    .trend .day { color:var(--muted); font-size:9px; margin-top:3px; }
   </style>
 </head>
 <body>
@@ -51,15 +60,30 @@
     <!-- SECTION 1: SUBMIT -->
     <section class="card">
       <h2>1 · Submit Content</h2>
+      <label>content type</label>
+      <select id="s-content-type" onchange="toggleContentFields()">
+        <option value="text">Text</option>
+        <option value="image_description">Image Description</option>
+      </select>
       <label>creator_id</label>
       <input id="s-creator" value="dev_user">
-      <label>text</label>
-      <textarea id="s-text" placeholder="Paste content to analyze..."></textarea>
-      <label>Dev samples (populate the textarea with representative content)</label>
-      <div>
-        <button class="alt" onclick="fillSample('human')">Sample: Human</button>
-        <button class="alt" onclick="fillSample('uncertain')">Sample: Uncertain</button>
-        <button class="alt" onclick="fillSample('ai')">Sample: AI</button>
+      <div id="s-text-fields">
+        <label>text</label>
+        <textarea id="s-text" placeholder="Paste content to analyze..."></textarea>
+        <label>Dev samples (populate the textarea with representative content)</label>
+        <div>
+          <button class="alt" onclick="fillSample('human')">Sample: Human</button>
+          <button class="alt" onclick="fillSample('uncertain')">Sample: Uncertain</button>
+          <button class="alt" onclick="fillSample('ai')">Sample: AI</button>
+        </div>
+      </div>
+      <div id="s-image-fields" style="display:none">
+        <label>image description</label>
+        <textarea id="s-description" placeholder="Describe the image in words..."></textarea>
+        <label>width / height / format (optional)</label>
+        <input id="s-width" type="number" placeholder="width e.g. 1920">
+        <input id="s-height" type="number" placeholder="height e.g. 1080">
+        <input id="s-format" placeholder="format e.g. jpg">
       </div>
       <button onclick="submitContent()">Submit</button>
       <div id="s-out"></div>
@@ -103,6 +127,56 @@
       <button class="alt" onclick="refreshLog()">Refresh Log</button>
       <span id="log-count" class="muted"></span>
       <pre id="log-out">Click "Refresh Log".</pre>
+    </section>
+
+    <!-- SECTION 7: ANALYTICS DASHBOARD -->
+    <section class="card span2">
+      <h2>7 · 📊 Analytics Dashboard</h2>
+      <button class="alt" onclick="loadAnalytics()">Refresh Analytics</button>
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-label">Total Submissions</div><div class="stat-value" id="an-total">–</div></div>
+        <div class="stat-card"><div class="stat-label">AI Detected</div><div class="stat-value" id="an-ai">–</div></div>
+        <div class="stat-card"><div class="stat-label">Human Labeled</div><div class="stat-value" id="an-human">–</div></div>
+        <div class="stat-card"><div class="stat-label">Appeals</div><div class="stat-value" id="an-appeals">–</div></div>
+      </div>
+      <div class="sub-grid">
+        <div>
+          <label>Detection breakdown</label>
+          <div id="an-breakdown"><span class="muted">No data.</span></div>
+          <label>Average score per signal</label>
+          <div id="an-signals"></div>
+        </div>
+        <div>
+          <label>Average confidence — last 7 days</label>
+          <div class="trend" id="an-trend"></div>
+          <div class="kv" style="margin-top:12px">
+            <div>Avg confidence</div><div id="an-conf">–</div>
+            <div>Appeal rate</div><div id="an-rate">–</div>
+            <div>Appeals pending</div><div id="an-pending">–</div>
+            <div>Appeals approved</div><div id="an-approved">–</div>
+            <div>Appeals denied</div><div id="an-denied">–</div>
+          </div>
+        </div>
+      </div>
+      <label>Recent activity (last 5)</label>
+      <pre id="an-recent">–</pre>
+    </section>
+
+    <!-- SECTION 8: VERIFIED HUMAN -->
+    <section class="card">
+      <h2>8 · 👤 Verified Human</h2>
+      <label>creator_id</label>
+      <input id="verify-creator-id" placeholder="Creator ID">
+      <button onclick="requestVerification()">Request Verification</button>
+      <button class="alt" onclick="checkVerification()">Check Status</button>
+      <div id="verification-status"></div>
+    </section>
+
+    <!-- SECTION 9: MODERATOR REVIEW -->
+    <section class="card">
+      <h2>9 · 🛡️ Moderator: Pending Verifications</h2>
+      <button class="alt" onclick="loadPendingRequests()">Load Pending</button>
+      <div id="pending-requests"><span class="muted">Click "Load Pending".</span></div>
     </section>
   </div>
 
@@ -150,35 +224,53 @@ function fillSample(kind) {
 }
 
 // ---- Section 1 + 6: submit + visualization --------------------------------
-async function submitContent() {
-  const body = { text: document.getElementById('s-text').value,
-                 creator_id: document.getElementById('s-creator').value };
-  const res = await api('POST', '/submit', body);
-  if (res.ok) {
-    const d = res.data;
-    latestContentId = d.content_id;
-    document.getElementById('a-cid').value = d.content_id;   // auto-fill appeal
-    show('s-out', res,
-      '<div class="kv">' +
-      '<div>Content ID</div><div>' + d.content_id + '</div>' +
-      '<div>Attribution</div><div>' + d.attribution + '</div>' +
-      '<div>Combined score</div><div>' + d.combined_score + '</div>' +
-      '<div>Confidence</div><div>' + d.confidence + '</div>' +
-      '<div>Transparency label</div><div>' + d.transparency_label + '</div>' +
-      '<div>Transparency variant</div><div><span class="pill">' + d.transparency_variant + '</span></div>' +
-      '<div>Groq score</div><div>' + d.groq_score + '</div>' +
-      '<div>Stylometric score</div><div>' + d.stylometric_score + '</div>' +
-      '</div>');
-    renderViz(d);
-  } else { show('s-out', res); }
+function toggleContentFields() {
+  const t = document.getElementById('s-content-type').value;
+  document.getElementById('s-text-fields').style.display = t === 'text' ? 'block' : 'none';
+  document.getElementById('s-image-fields').style.display = t === 'image_description' ? 'block' : 'none';
 }
+
+async function submitContent() {
+  const type = document.getElementById('s-content-type').value;
+  const body = { content_type: type, creator_id: document.getElementById('s-creator').value };
+  if (type === 'text') {
+    body.text = document.getElementById('s-text').value;
+  } else {
+    body.description = document.getElementById('s-description').value;
+    body.width = parseInt(document.getElementById('s-width').value) || null;
+    body.height = parseInt(document.getElementById('s-height').value) || null;
+    body.format = document.getElementById('s-format').value || 'unknown';
+  }
+  const res = await api('POST', '/submit', body);
+  if (!res.ok) { show('s-out', res); return; }
+  const d = res.data;
+  latestContentId = d.content_id;
+  document.getElementById('a-cid').value = d.content_id;   // auto-fill appeal
+
+  let rows =
+    '<div>Content ID</div><div>' + d.content_id + '</div>' +
+    '<div>Content type</div><div><span class="pill">' + d.content_type + '</span></div>' +
+    '<div>Attribution</div><div>' + d.attribution + '</div>' +
+    '<div>Combined score</div><div>' + d.combined_score + '</div>' +
+    '<div>Confidence</div><div>' + d.confidence + '</div>' +
+    '<div>Transparency label</div><div>' + d.transparency_label + '</div>' +
+    '<div>Transparency variant</div><div><span class="pill">' + d.transparency_variant + '</span></div>';
+  if (d.explanation) rows += '<div>Explanation</div><div>' + d.explanation + '</div>';
+  show('s-out', res, '<div class="kv">' + rows + '</div>');
+  renderViz(d);
+}
+
 function renderViz(d) {
-  document.getElementById('viz').innerHTML =
-    bar('Groq Score', d.groq_score) +
-    bar('Stylometric Score', d.stylometric_score) +
-    bar('Combined Score', d.combined_score, 'combined') +
-    bar('Confidence', d.confidence, 'conf') +
-    '<div>Transparency Variant: <span class="pill">' + d.transparency_variant + '</span></div>';
+  let bars = '<div class="muted">Signal breakdown (0 = human-like, 1 = AI-like)</div>';
+  if (d.content_type === 'image_description' && d.signal_scores) {
+    Object.entries(d.signal_scores).forEach(([k, v]) => { bars += bar(k, v); });
+  } else {
+    bars += bar('Groq Score', d.groq_score) + bar('Stylometric Score', d.stylometric_score) +
+            bar('Behavioral Score', d.behavioral_score);
+  }
+  bars += bar('Combined Score', d.combined_score, 'combined') + bar('Confidence', d.confidence, 'conf') +
+          '<div>Transparency Variant: <span class="pill">' + d.transparency_variant + '</span></div>';
+  document.getElementById('viz').innerHTML = bars;
 }
 
 // ---- Section 2: appeal ----------------------------------------------------
@@ -232,6 +324,103 @@ async function runRateLimitTest() {
   out.innerHTML = rows +
     '<p>Total successes: <b>' + ok + '</b> &nbsp; Total 429s: <b>' + blocked + '</b></p>' +
     '<p class="muted">Note: limit is per-IP per rolling minute, so earlier submissions this minute count too.</p>';
+}
+
+// ---- Section 7: analytics dashboard ---------------------------------------
+async function loadAnalytics() {
+  const res = await api('GET', '/analytics/metrics');
+  if (!res.ok) { document.getElementById('an-recent').textContent = JSON.stringify(res.data, null, 2); return; }
+  const d = res.data;
+  const dc = d.detection_counts || {};
+  document.getElementById('an-total').textContent = d.total_submissions;
+  document.getElementById('an-ai').textContent = dc.ai_generated || 0;
+  document.getElementById('an-human').textContent = dc.human_written || 0;
+  document.getElementById('an-appeals').textContent = d.appeal_count;
+  document.getElementById('an-conf').textContent = (d.avg_confidence * 100).toFixed(1) + '%';
+  document.getElementById('an-rate').textContent = (d.appeal_rate * 100).toFixed(1) + '%';
+  document.getElementById('an-pending').textContent = d.appeal_status.pending;
+  document.getElementById('an-approved').textContent = d.appeal_status.approved;
+  document.getElementById('an-denied').textContent = d.appeal_status.denied;
+
+  // Detection breakdown bars (proportion of total)
+  const total = d.total_submissions || 1;
+  const order = ['ai_generated', 'uncertain', 'human_written'];
+  document.getElementById('an-breakdown').innerHTML = order.map(k =>
+    '<label>' + k + ': ' + (dc[k] || 0) + '</label>' +
+    '<div class="bar"><span style="width:' + Math.round((dc[k] || 0) / total * 100) + '%"></span></div>'
+  ).join('') || '<span class="muted">No data.</span>';
+
+  // Average score per signal
+  const sig = d.avg_signal_scores || {};
+  document.getElementById('an-signals').innerHTML =
+    bar('Groq', sig.groq) + bar('Stylometric', sig.stylometric) + bar('Behavioral', sig.behavioral);
+
+  // 7-day confidence trend (bar heights scaled to 100%)
+  document.getElementById('an-trend').innerHTML = (d.confidence_timeline || []).map(p => {
+    const v = p.avg_confidence;
+    const h = v == null ? 0 : Math.round(v * 100);
+    const title = v == null ? 'no data' : (v * 100).toFixed(0) + '%';
+    return '<div class="col"><div class="fill" style="height:' + h + '%" title="' + title + '"></div>' +
+           '<div class="day">' + p.date.slice(5) + '</div></div>';
+  }).join('');
+
+  // Recent activity (last 5)
+  const recent = (d.recent_entries || []).slice(-5).reverse().map(e => ({
+    content_id: e.content_id, attribution: e.attribution, combined_score: e.combined_score,
+    confidence: e.confidence, status: e.status
+  }));
+  document.getElementById('an-recent').textContent = JSON.stringify(recent, null, 2);
+}
+
+loadAnalytics();  // auto-load on page open
+
+// ---- Section 8/9: Verified Human credential -------------------------------
+function _verifyId() { return document.getElementById('verify-creator-id').value.trim(); }
+
+async function requestVerification() {
+  const id = _verifyId();
+  if (!id) { alert('Please enter a creator ID'); return; }
+  const res = await api('POST', '/certificate/request', { creator_id: id });
+  show('verification-status', res,
+    '<p>Status: <span class="pill">' + res.data.status + '</span></p>' +
+    '<p class="muted">' + (res.data.message || '') + '</p>');
+}
+
+async function checkVerification() {
+  const id = _verifyId();
+  if (!id) { alert('Please enter a creator ID'); return; }
+  const res = await api('GET', '/certificate/status/' + encodeURIComponent(id));
+  show('verification-status', res,
+    '<pre>' + JSON.stringify(res.data, null, 2) + '</pre>');
+}
+
+async function loadPendingRequests() {
+  const res = await api('GET', '/certificate/review');
+  const el = document.getElementById('pending-requests');
+  if (!res.ok) { el.innerHTML = '<pre class="err">' + JSON.stringify(res.data, null, 2) + '</pre>'; return; }
+  let html = '<p class="muted">' + res.data.pending_count + ' pending request(s)</p>';
+  res.data.pending_requests.forEach(req => {
+    const cid = req.creator_id.replace(/'/g, "\\'");
+    html += '<div class="kv" style="align-items:center"><div>' + req.creator_id + '</div><div>' +
+      '<button onclick="approveVerification(\'' + cid + '\')">Approve</button> ' +
+      '<button class="alt" onclick="denyVerification(\'' + cid + '\')">Deny</button></div></div>';
+  });
+  el.innerHTML = html;
+}
+
+async function approveVerification(creatorId) {
+  const res = await api('POST', '/certificate/review/approve',
+    { creator_id: creatorId, notes: 'Approved via dashboard' });
+  alert(res.ok ? ('Approved! Certificate ID: ' + (res.data.certificate?.certificate_id || 'N/A'))
+               : ('Error: ' + JSON.stringify(res.data)));
+  loadPendingRequests();
+}
+
+async function denyVerification(creatorId) {
+  const reason = prompt('Reason for denial:') || '';
+  const res = await api('POST', '/certificate/review/deny', { creator_id: creatorId, reason });
+  alert(res.ok ? 'Verification denied' : ('Error: ' + JSON.stringify(res.data)));
+  loadPendingRequests();
 }
 </script>
 </body>

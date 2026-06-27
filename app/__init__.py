@@ -25,8 +25,10 @@ def create_app():
         }), 429
 
     # Register blueprints
-    from app.routes import submit, dashboard
+    from app.routes import submit, dashboard, analytics, certificate
     app.register_blueprint(submit.bp)
     app.register_blueprint(dashboard.bp)
+    app.register_blueprint(analytics.bp)
+    app.register_blueprint(certificate.bp)
 
     return app

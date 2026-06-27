@@ -12,15 +12,15 @@ hard-coded Groq values.
     python test_integration.py
 """
 
+import statistics
+
 from app import create_app
-from app.utils.helpers import (
-    GROQ_WEIGHT,
-    STYLOMETRIC_WEIGHT,
-    classify_score,
-    combine_scores,
-    compute_confidence,
-    predict_attribution,
+from app.detection.ensemble import (
+    GROQ_WEIGHT_3,
+    STYLOMETRIC_WEIGHT_3,
+    BEHAVIORAL_WEIGHT_3,
 )
+from app.utils.helpers import classify_score, predict_attribution
 
 SAMPLES = [
     ("Clearly AI-generated",
@@ -53,7 +53,8 @@ SAMPLES = [
 
 REQUIRED_RESPONSE_FIELDS = {
     "content_id", "attribution", "label", "groq_score", "stylometric_score",
-    "combined_score", "confidence", "timestamp", "appeal_available",
+    "behavioral_score", "combined_score", "confidence", "timestamp",
+    "appeal_available",
 }
 
 
@@ -61,8 +62,9 @@ def test_integration():
     app = create_app()
     client = app.test_client()
 
-    print("🧪 Milestone 4 integration test (Groq + Stylometric ensemble)")
-    print(f"   weights: Groq {GROQ_WEIGHT:.0%} / Stylometric {STYLOMETRIC_WEIGHT:.0%}")
+    print("🧪 Integration test (Groq + Stylometric + Behavioral ensemble)")
+    print(f"   weights: Groq {GROQ_WEIGHT_3:.0%} / Stylometric {STYLOMETRIC_WEIGHT_3:.0%}"
+          f" / Behavioral {BEHAVIORAL_WEIGHT_3:.0%}")
     print("=" * 60)
 
     for name, text in SAMPLES:
@@ -72,24 +74,29 @@ def test_integration():
 
         groq = body["groq_score"]
         stylo = body["stylometric_score"]
+        behavioral = body["behavioral_score"]
         combined = body["combined_score"]
         confidence = body["confidence"]
 
         print(f"\n📝 {name}")
         print(f"   Groq score:        {groq:.4f}")
         print(f"   Stylometric score: {stylo:.4f}")
+        print(f"   Behavioral score:  {behavioral:.4f}")
         print(f"   Combined score:    {combined:.4f}")
         print(f"   Confidence:        {confidence:.4f}")
         print(f"   Final prediction:  {body['attribution']}  |  {body['label']}")
 
-        # --- Invariants that must hold regardless of Groq's exact value ---
+        # --- Invariants that must hold regardless of the live signal values ---
         assert REQUIRED_RESPONSE_FIELDS <= set(body), f"{name}: missing fields"
-        for value in (groq, stylo, combined, confidence):
+        for value in (groq, stylo, behavioral, combined, confidence):
             assert 0.0 <= value <= 1.0, f"{name}: value out of [0,1]"
-        # Combination math (allow rounding tolerance).
-        assert abs(combined - combine_scores(groq, stylo)) < 1e-3, f"{name}: combine math"
-        # Confidence math: rises away from 0.5, deterministic.
-        assert abs(confidence - compute_confidence(combined)) < 1e-3, f"{name}: confidence math"
+        # Three-signal weighted combination (allow rounding tolerance).
+        expected_combined = (groq * GROQ_WEIGHT_3 + stylo * STYLOMETRIC_WEIGHT_3
+                             + behavioral * BEHAVIORAL_WEIGHT_3)
+        assert abs(combined - expected_combined) < 1e-3, f"{name}: combine math"
+        # Agreement-based confidence: 1 - sample stdev * 1.5, clamped to [0,1].
+        expected_conf = max(0.0, min(1.0, 1 - statistics.stdev([groq, stylo, behavioral]) * 1.5))
+        assert abs(confidence - expected_conf) < 1e-3, f"{name}: confidence math"
         # Prediction & label are derived from the COMBINED score (not a single
         # signal). attribution is the standardized 3-value prediction; label is
         # the detailed display string from classify_score.
