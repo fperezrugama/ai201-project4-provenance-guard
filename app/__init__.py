@@ -10,8 +10,8 @@ def create_app():
     
     # Configuration
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-for-testing')
-    
-    # Register blueprints (we'll add routes here)
+
+    # Register blueprints
     from app.routes import submit
     app.register_blueprint(submit.bp)
     
